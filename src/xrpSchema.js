@@ -82,44 +82,20 @@ export const CurrencyInfoSchema = {
   ]
 }
 
-export const NetworkFeesSchema = {
-  'type': 'object',
-  'additionalProperties': {
-    'type': 'object',
-    'properties': {
-      'gasLimit': {
-        'type': 'object',
-        'properties': {
-          'regularTransaction': { 'type': 'string' },
-          'tokenTransaction': { 'type': 'string' }
-        },
-        'required': [ 'regularTransaction', 'tokenTransaction' ]
-      },
-      'gasPrice': {
-        'type': 'object',
-        'properties': {
-          'lowFee': { 'type': 'string' },
-          'standardFeeLow': { 'type': 'string' },
-          'standardFeeHigh': { 'type': 'string' },
-          'standardFeeLowAmount': { 'type': 'string' },
-          'standardFeeHighAmount': { 'type': 'string' },
-          'highFee': { 'type': 'string' }
-        },
-        'required': [ 'lowFee', 'standardFeeLow', 'standardFeeHigh', 'standardFeeLowAmount', 'standardFeeHighAmount', 'highFee' ]
+export const GetServerInfoSchema = {
+  type: 'object',
+  properties: {
+    buildVersion: { type: 'string' },
+    validatedLedger: {
+      type: 'object',
+      properties: {
+        age: { type: 'number' },
+        baseFeeXRP: { type: 'string' },
+        hash: { type: 'string' },
+        ledgerVersion: { type: 'number' }
       }
-    },
-    'required': [ 'gasLimit' ]
+    }
   }
-}
-
-export const EthGasStationSchema = {
-  'type': 'object',
-  'properties': {
-    'safeLow': {'type': 'number'},
-    'average': {'type': 'number'},
-    'fastest': {'type': 'number'}
-  },
-  'required': ['safeLow', 'average', 'fastest']
 }
 
 export const CustomTokenSchema = {
