@@ -20,6 +20,26 @@ export type XrpCustomToken = {
   contractAddress: string
 }
 
+export type XrpBalanceChange = {
+  currency: string,
+  value: string
+}
+export type XrpGetTransaction = {
+  type: string,
+  address: string,
+  id: string,
+  outcome: {
+    result: string,
+    timestamp: string,
+    fee: string,
+    ledgerVersion: number,
+    balanceChanges: {
+      [address: string]: Array<XrpBalanceChange>
+    }
+  }
+}
+export type XrpGetTransactions = Array<XrpGetTransaction>
+
 export class WalletLocalData {
   blockHeight: number
   lastAddressQueryHeight: number

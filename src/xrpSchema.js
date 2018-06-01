@@ -85,14 +85,49 @@ export const CurrencyInfoSchema = {
 export const GetServerInfoSchema = {
   type: 'object',
   properties: {
-    buildVersion: { type: 'string' },
+    buildVersion: {type: 'string'},
     validatedLedger: {
       type: 'object',
       properties: {
-        age: { type: 'number' },
-        baseFeeXRP: { type: 'string' },
-        hash: { type: 'string' },
-        ledgerVersion: { type: 'number' }
+        age: {type: 'number'},
+        baseFeeXRP: {type: 'string'},
+        hash: {type: 'string'},
+        ledgerVersion: {type: 'number'}
+      }
+    }
+  }
+}
+
+export const GetBalancesSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      currency: {type: 'string'},
+      value: {type: 'string'}
+    }
+  }
+}
+
+export const GetTransactionsSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      type: {type: 'string'},
+      address: {type: 'string'},
+      id: {type: 'string'},
+      outcome: {
+        type: 'object',
+        properties: {
+          result: {type: 'string'},
+          timestamp: {type: 'string'},
+          fee: {type: 'string'},
+          ledgerVersion: {type: 'number'},
+          balanceChanges: {
+            type: 'object'
+          }
+        }
       }
     }
   }

@@ -92,13 +92,13 @@ export const rippleCurrencyPluginFactory: EdgeCurrencyPluginFactory = {
               .getText(DATA_STORE_FOLDER, 'walletLocalData')
 
           rippleEngine.walletLocalData = new WalletLocalData(result)
-          rippleEngine.walletLocalData.rippleAddress = rippleEngine.walletInfo.keys.rippleAddresss
+          rippleEngine.walletLocalData.rippleAddress = rippleEngine.walletInfo.keys.rippleAddress
         } catch (err) {
           try {
             console.log(err)
             console.log('No walletLocalData setup yet: Failure is ok')
             rippleEngine.walletLocalData = new WalletLocalData(null)
-            rippleEngine.walletLocalData.rippleAddress = rippleEngine.walletInfo.keys.rippleAddresss
+            rippleEngine.walletLocalData.rippleAddress = rippleEngine.walletInfo.keys.rippleAddress
             await rippleEngine.walletLocalFolder
               .folder(DATA_STORE_FOLDER)
               .file(DATA_STORE_FILE)

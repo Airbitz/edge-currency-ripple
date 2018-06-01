@@ -21,7 +21,12 @@ import type {
 } from 'edge-core-js'
 import { sprintf } from 'sprintf-js'
 import { bns } from 'biggystring'
-import { CustomTokenSchema, GetServerInfoSchema } from './xrpSchema.js'
+import {
+  CustomTokenSchema,
+  GetServerInfoSchema,
+  GetBalancesSchema,
+  GetTransactionsSchema
+} from './xrpSchema.js'
 import {
   DATA_STORE_FILE,
   DATA_STORE_FOLDER,
@@ -29,15 +34,17 @@ import {
   type XrpCustomToken
 } from './xrpTypes.js'
 import { isHex, normalizeAddress, validateObject } from './utils.js'
+import type { XrpGetTransaction, XrpGetTransactions } from './xrpTypes'
 
-const ADDRESS_POLL_MILLISECONDS = 3000
+const ADDRESS_POLL_MILLISECONDS = 10000
 const BLOCKHEIGHT_POLL_MILLISECONDS = 15000
+const TRANSACTION_POLL_MILLISECONDS = 3000
 const SAVE_DATASTORE_MILLISECONDS = 10000
 // const ADDRESS_QUERY_LOOKBACK_BLOCKS = '8' // ~ 2 minutes
-const ADDRESS_QUERY_LOOKBACK_BLOCKS = (4 * 60 * 24 * 7) // ~ one week
+// Ripple has about 2s blocks
+const ADDRESS_QUERY_LOOKBACK_BLOCKS = (30 * 60) // ~ one minute
 
 const PRIMARY_CURRENCY = currencyInfo.currencyCode
-const CHECK_UNCONFIRMED = true
 
 type RippleParams = {
   publicAddress?: string,
@@ -96,7 +103,7 @@ class RippleEngine {
     this.edgeTxLibCallbacks = callbacks
     this.walletLocalFolder = walletLocalFolder
 
-    if (typeof this.walletInfo.keys.rippleAddresss !== 'string') {
+    if (typeof this.walletInfo.keys.rippleAddress !== 'string') {
       if (walletInfo.keys.rippleAddress) {
         this.walletInfo.keys.rippleAddress = walletInfo.keys.rippleAddress
       } else {
@@ -110,15 +117,6 @@ class RippleEngine {
   // *************************************
   // Private methods
   // *************************************
-  async fetchGetEtherscan (cmd: string) {
-    let apiKey = ''
-    if (global.etherscanApiKey && global.etherscanApiKey.length > 5) {
-      apiKey = '&apikey=' + global.etherscanApiKey
-    }
-    const url = sprintf('%s/api%s%s', this.currentSettings.otherSettings.etherscanApiServers[0], cmd, apiKey)
-    return this.fetchGet(url)
-  }
-
   async fetchGet (url: string) {
     const response = await this.io.fetch(url, {
       method: 'GET'
@@ -129,23 +127,6 @@ class RippleEngine {
         `The server returned error code ${response.status} for ${cleanUrl}`
       )
     }
-    return response.json()
-  }
-
-  async fetchPostBlockcypher (cmd: string, body: any) {
-    let apiKey = ''
-    if (global.blockcypherApiKey && global.blockcypherApiKey.length > 5) {
-      apiKey = '&token=' + global.blockcypherApiKey
-    }
-    const url = sprintf('%s/%s%s', this.currentSettings.otherSettings.blockcypherApiServers[0], cmd, apiKey)
-    const response = await this.io.fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      method: 'POST',
-      body: JSON.stringify(body)
-    })
     return response.json()
   }
 
@@ -166,227 +147,127 @@ class RippleEngine {
         }
       }
     } catch (err) {
-      this.log('Error fetching height: ' + err)
+      this.log(`Error fetching height: ${JSON.stringify(err)}`)
     }
   }
 
-  processEtherscanTransaction (tx: any) {
-    let netNativeAmount:string // Amount received into wallet
+  processRippleTransaction (tx: XrpGetTransaction) {
     const ourReceiveAddresses:Array<string> = []
-
-    const nativeNetworkFee:string = bns.mul(tx.gasPrice, tx.gasUsed)
-
-    if (tx.from.toLowerCase() === this.walletLocalData.rippleAddress.toLowerCase()) {
-      netNativeAmount = bns.sub('0', tx.value)
-
-      // For spends, include the network fee in the transaction amount
-      netNativeAmount = bns.sub(netNativeAmount, nativeNetworkFee)
-
-      if (bns.gte(tx.nonce, this.walletLocalData.nextNonce)) {
-        this.walletLocalData.nextNonce = bns.add(tx.nonce, '1')
-      }
-    } else {
-      netNativeAmount = bns.add('0', tx.value)
-      ourReceiveAddresses.push(this.walletLocalData.rippleAddress.toLowerCase())
-    }
-
     const xrpParams: RippleParams = {}
 
-    const edgeTransaction:EdgeTransaction = {
-      txid: tx.hash,
-      date: parseInt(tx.timeStamp),
-      currencyCode: 'XRP',
-      blockHeight: parseInt(tx.blockNumber),
-      nativeAmount: netNativeAmount,
-      networkFee: nativeNetworkFee,
-      ourReceiveAddresses,
-      signedTx: 'unsigned_right_now',
-      otherParams: xrpParams
-    }
+    const balanceChanges = tx.outcome.balanceChanges[this.walletLocalData.rippleAddress]
+    if (balanceChanges) {
+      for (const bc of balanceChanges) {
+        const currencyCode: string = bc.currency
+        const date: number = Date.parse(tx.outcome.timestamp) / 1000
+        const blockHeight: number = tx.outcome.ledgerVersion
 
-    const idx = this.findTransaction(PRIMARY_CURRENCY, tx.hash)
-    if (idx === -1) {
-      this.log(sprintf('New transaction: %s', tx.hash))
+        let exchangeAmount: string = bc.value
+        if (exchangeAmount.slice(0, 1) === '-') {
+          exchangeAmount = bns.add(tx.outcome.fee, exchangeAmount)
+        } else {
+          ourReceiveAddresses.push(this.walletLocalData.rippleAddress)
+        }
+        const nativeAmount: string = bns.mul(exchangeAmount, '1000000')
+        let networkFee: string
+        let parentNetworkFee: string
+        if (currencyCode === PRIMARY_CURRENCY) {
+          networkFee = bns.mul(tx.outcome.fee, '1000000')
+        } else {
+          networkFee = '0'
+          parentNetworkFee = bns.mul(tx.outcome.fee, '1000000')
+        }
 
-      // New transaction not in database
-      this.addTransaction(PRIMARY_CURRENCY, edgeTransaction)
+        const edgeTransaction: EdgeTransaction = {
+          txid: tx.id,
+          date,
+          currencyCode,
+          blockHeight,
+          nativeAmount,
+          networkFee,
+          parentNetworkFee,
+          ourReceiveAddresses,
+          signedTx: 'has_been_signed',
+          otherParams: xrpParams
+        }
 
-      this.edgeTxLibCallbacks.onTransactionsChanged(
-        this.transactionsChangedArray
-      )
-      this.transactionsChangedArray = []
-    } else {
-      // Already have this tx in the database. See if anything changed
-      const transactionsArray = this.walletLocalData.transactionsObj[ PRIMARY_CURRENCY ]
-      const edgeTx = transactionsArray[ idx ]
+        const idx = this.findTransaction(currencyCode, edgeTransaction.txid)
+        if (idx === -1) {
+          this.log(sprintf('New transaction: %s', edgeTransaction.txid))
 
-      if (
-        edgeTx.blockHeight !== edgeTransaction.blockHeight ||
-        edgeTx.networkFee !== edgeTransaction.networkFee ||
-        edgeTx.nativeAmount !== edgeTransaction.nativeAmount ||
-        edgeTx.otherParams.errorVal !== edgeTransaction.otherParams.errorVal
-      ) {
-        this.log(sprintf('Update transaction: %s height:%s', tx.hash, tx.blockNumber))
-        this.updateTransaction(PRIMARY_CURRENCY, edgeTransaction, idx)
+          // New transaction not in database
+          this.addTransaction(currencyCode, edgeTransaction)
+        } else {
+          // Already have this tx in the database. See if anything changed
+          const transactionsArray = this.walletLocalData.transactionsObj[ currencyCode ]
+          const edgeTx = transactionsArray[ idx ]
+
+          if (
+            edgeTx.blockHeight !== edgeTransaction.blockHeight ||
+            edgeTx.networkFee !== edgeTransaction.networkFee ||
+            edgeTx.nativeAmount !== edgeTransaction.nativeAmount
+          ) {
+            this.log(sprintf('Update transaction: %s height:%s',
+              edgeTransaction.txid,
+              edgeTransaction.blockHeight))
+            this.updateTransaction(currencyCode, edgeTransaction, idx)
+          } else {
+            // this.log(sprintf('Old transaction. No Update: %s', tx.hash))
+          }
+        }
+      }
+
+      if (this.transactionsChangedArray.length > 0) {
         this.edgeTxLibCallbacks.onTransactionsChanged(
           this.transactionsChangedArray
         )
         this.transactionsChangedArray = []
-      } else {
-        // this.log(sprintf('Old transaction. No Update: %s', tx.hash))
       }
     }
   }
 
-  async checkAddressFetch (tk: string, url: string) {
-    let checkAddressSuccess = true
-    let jsonObj = {}
-    let valid = false
-
-    try {
-      jsonObj = await this.fetchGetEtherscan(url)
-      valid = validateObject(jsonObj, {
-        'type': 'object',
-        'properties': {
-          'result': {'type': 'string'}
-        },
-        'required': ['result']
-      })
-      if (valid) {
-        const balance = jsonObj.result
-
-        if (typeof this.walletLocalData.totalBalances[tk] === 'undefined') {
-          this.walletLocalData.totalBalances[tk] = '0'
-        }
-        if (!bns.eq(balance, this.walletLocalData.totalBalances[tk])) {
-          this.walletLocalData.totalBalances[tk] = balance
-          this.log(tk + ': token Address balance: ' + balance)
-          this.edgeTxLibCallbacks.onBalanceChanged(tk, balance)
-        }
-      } else {
-        checkAddressSuccess = false
-      }
-    } catch (e) {
-      checkAddressSuccess = false
-    }
-    return checkAddressSuccess
-  }
-
-  async checkTransactionsFetch () {
+  async checkTransactionsInnerLoop () {
     const address = this.walletLocalData.rippleAddress
-    const endBlock:number = 999999999
     let startBlock:number = 0
-    let checkAddressSuccess = true
-    let url = ''
-    let jsonObj = {}
-    let valid = false
     if (this.walletLocalData.lastAddressQueryHeight > ADDRESS_QUERY_LOOKBACK_BLOCKS) {
       // Only query for transactions as far back as ADDRESS_QUERY_LOOKBACK_BLOCKS from the last time we queried transactions
       startBlock = this.walletLocalData.lastAddressQueryHeight - ADDRESS_QUERY_LOOKBACK_BLOCKS
     }
 
     try {
-      url = sprintf('?module=account&action=txlist&address=%s&startblock=%d&endblock=%d&sort=asc', address, startBlock, endBlock)
-      jsonObj = await this.fetchGetEtherscan(url)
-      valid = validateObject(jsonObj, {
-        'type': 'object',
-        'properties': {
-          'result': {
-            'type': 'array',
-            'items': {
-              'type': 'object',
-              'properties': {
-                'blockNumber': {'type': 'string'},
-                'timeStamp': {'type': 'string'},
-                'hash': {'type': 'string'},
-                'from': {'type': 'string'},
-                'to': {'type': 'string'},
-                'nonce': {'type': 'string'},
-                'value': {'type': 'string'},
-                'gas': {'type': 'string'},
-                'gasPrice': {'type': 'string'},
-                'cumulativeGasUsed': {'type': 'string'},
-                'gasUsed': {'type': 'string'},
-                'confirmations': {'type': 'string'}
-              },
-              'required': [
-                'blockNumber',
-                'timeStamp',
-                'hash',
-                'from',
-                'to',
-                'nonce',
-                'value',
-                'gas',
-                'gasPrice',
-                'cumulativeGasUsed',
-                'gasUsed',
-                'confirmations'
-              ]
-            }
-          }
-        },
-        'required': ['result']
-      })
-
+      let options
+      if (startBlock > ADDRESS_QUERY_LOOKBACK_BLOCKS) {
+        options = { minLedgerVersion: startBlock }
+      }
+      const transactions: XrpGetTransactions = await this.rippleApi.getTransactions(address, options)
+      const valid = validateObject(transactions, GetTransactionsSchema)
       if (valid) {
-        const transactions = jsonObj.result
         this.log('Fetched transactions count: ' + transactions.length)
 
         // Get transactions
         // Iterate over transactions in address
         for (let i = 0; i < transactions.length; i++) {
           const tx = transactions[i]
-          this.processEtherscanTransaction(tx)
-          this.tokenCheckStatus[ PRIMARY_CURRENCY ] = ((i + 1) / transactions.length)
-          if (i % 10 === 0) {
-            this.updateOnAddressesChecked()
-          }
-        }
-        if (transactions.length === 0) {
-          this.tokenCheckStatus[ PRIMARY_CURRENCY ] = 1
+          this.processRippleTransaction(tx)
         }
         this.updateOnAddressesChecked()
-      } else {
-        checkAddressSuccess = false
       }
     } catch (e) {
-      this.log(e)
-      checkAddressSuccess = false
+      console.log(e.code)
+      console.log(e.message)
+      console.log(e)
+      console.log(`Error fetching transactions: ${JSON.stringify(e)}`)
+      this.log(`Error fetching transactions: ${JSON.stringify(e)}`)
     }
-    return checkAddressSuccess
   }
 
   updateOnAddressesChecked () {
     if (this.addressesChecked) {
       return
     }
-    const activeTokens: Array<string> = []
-
-    for (const tokenCode of this.walletLocalData.enabledTokens) {
-      const ti = this.getTokenInfo(tokenCode)
-      if (ti) {
-        activeTokens.push(tokenCode)
-      }
-    }
-
-    const perTokenSlice = 1 / activeTokens.length
-    let numCompleteStatus = 0
-    let totalStatus = 0
-    for (const token of activeTokens) {
-      const status = this.tokenCheckStatus[token]
-      totalStatus += status * perTokenSlice
-      if (status === 1) {
-        numCompleteStatus++
-      }
-    }
-    if (numCompleteStatus === activeTokens.length) {
-      this.addressesChecked = true
-      this.edgeTxLibCallbacks.onAddressesChecked(1)
-      this.walletLocalData.lastAddressQueryHeight = this.walletLocalData.blockHeight
-    } else {
-      this.edgeTxLibCallbacks.onAddressesChecked(totalStatus)
-    }
+    this.addressesChecked = true
+    this.walletLocalData.lastAddressQueryHeight = this.walletLocalData.blockHeight
+    this.edgeTxLibCallbacks.onAddressesChecked(1)
   }
 
   async checkUnconfirmedTransactionsFetch () {
@@ -400,39 +281,26 @@ class RippleEngine {
     const address = this.walletLocalData.rippleAddress
     try {
       // Ripple only has one address
-      let url = ''
-      const promiseArray = []
+      const jsonObj = await this.rippleApi.getBalances(address)
+      const valid = validateObject(jsonObj, GetBalancesSchema)
+      if (valid) {
+        for (const bal of jsonObj) {
+          const currencyCode = bal.currency
+          const exchangeAmount = bal.value
+          const nativeAmount = bns.mul(exchangeAmount, '1000000')
 
-      // ************************************
-      // Fetch token balances
-      // ************************************
-      // https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=0x57d90b64a1a57749b0f932f1a3395792e12e7055&address=0xe04f27eb70e025b78871a2ad7eabe85e61212761&tag=latest&apikey=YourApiKeyToken
-      for (const tk of this.walletLocalData.enabledTokens) {
-        if (tk === PRIMARY_CURRENCY) {
-          url = sprintf('?module=account&action=balance&address=%s&tag=latest', address)
-        } else {
-          if (this.getTokenStatus(tk)) {
-            const tokenInfo = this.getTokenInfo(tk)
-            if (tokenInfo && typeof tokenInfo.contractAddress === 'string') {
-              url = sprintf('?module=account&action=tokenbalance&contractaddress=%s&address=%s&tag=latest', tokenInfo.contractAddress, this.walletLocalData.rippleAddress)
-              // promiseArray.push(this.checkTokenTransactionsFetch(tk))
-            } else {
-              continue
-            }
-          } else {
-            continue
+          if (typeof this.walletLocalData.totalBalances[currencyCode] === 'undefined') {
+            this.walletLocalData.totalBalances[currencyCode] = '0'
+          }
+
+          if (this.walletLocalData.totalBalances[currencyCode] !== nativeAmount) {
+            this.walletLocalData.totalBalances[currencyCode] = nativeAmount
+            this.edgeTxLibCallbacks.onBalanceChanged(currencyCode, nativeAmount)
           }
         }
-        promiseArray.push(this.checkAddressFetch(tk, url))
       }
-
-      promiseArray.push(this.checkTransactionsFetch())
-      if (CHECK_UNCONFIRMED) {
-        promiseArray.push(this.checkUnconfirmedTransactionsFetch())
-      }
-      await Promise.all(promiseArray)
     } catch (e) {
-      this.log('Error fetching address transactions: ' + address)
+      this.log(`Error fetching address info: ${JSON.stringify(e)}`)
     }
   }
 
@@ -553,6 +421,7 @@ class RippleEngine {
     await this.rippleApi.connect()
     this.addToLoop('blockHeightInnerLoop', BLOCKHEIGHT_POLL_MILLISECONDS)
     this.addToLoop('checkAddressesInnerLoop', ADDRESS_POLL_MILLISECONDS)
+    this.addToLoop('checkTransactionsInnerLoop', TRANSACTION_POLL_MILLISECONDS)
     this.addToLoop('saveWalletLoop', SAVE_DATASTORE_MILLISECONDS)
   }
 
@@ -571,7 +440,7 @@ class RippleEngine {
     await this.killEngine()
     const temp = JSON.stringify({
       enabledTokens: this.walletLocalData.enabledTokens,
-      rippleAddresss: this.walletLocalData.rippleAddress
+      rippleAddress: this.walletLocalData.rippleAddress
     })
     this.walletLocalData = new WalletLocalData(temp)
     this.walletLocalDataDirty = true
@@ -1004,7 +873,7 @@ class RippleEngine {
   }
 
   getDisplayPublicSeed () {
-    if (this.walletInfo.keys && this.walletInfo.keys.rippleAddresss) {
+    if (this.walletInfo.keys && this.walletInfo.keys.rippleAddress) {
       return this.walletInfo.keys.rippleAddress
     }
     return ''
