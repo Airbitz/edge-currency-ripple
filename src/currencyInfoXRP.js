@@ -25,8 +25,8 @@ export const currencyInfo: EdgeCurrencyInfo = {
 
   defaultSettings,
 
-  addressExplorer: 'https://xrpcharts.ripple.com/#/transactions/%s',
-  transactionExplorer: 'https://xrpcharts.ripple.com/#/transactions/%s',
+  addressExplorer: 'https://bithomp.com/explorer/%s',
+  transactionExplorer: 'https://bithomp.com/explorer/%s',
 
   denominations: [
     // An array of Objects of the possible denominations for this currency
